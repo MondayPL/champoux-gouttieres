@@ -21,3 +21,31 @@ body {
 input, select, textarea, button {
   font: inherit;
 }
+
+/* Calendrier — vue installateurs / impression */
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+  }
+  .no-print {
+    display: none !important;
+  }
+  nav,
+  header,
+  aside,
+  [data-sidebar],
+  .print\:hidden {
+    display: none !important;
+  }
+  .installer-screen {
+    display: none !important;
+  }
+  .installer-print {
+    display: block !important;
+  }
+  .break-inside-avoid {
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+}

@@ -32,6 +32,7 @@ export default async function CalendrierPage() {
       numContrat: c.numContrat,
       nom: c.nom,
       prenom: c.prenom,
+      telephone: c.telephone,
       civique: c.civique,
       rue: c.rue,
       villeNom: c.villeNom,
@@ -55,6 +56,7 @@ export default async function CalendrierPage() {
         numContrat: s.contrat.numContrat,
         nom: s.contrat.nom,
         prenom: s.contrat.prenom,
+        telephone: s.contrat.telephone,
         civique: s.contrat.civique,
         rue: s.contrat.rue,
         villeNom: s.contrat.villeNom,
@@ -71,7 +73,7 @@ export default async function CalendrierPage() {
     <div>
       <PageHeader
         title="Calendrier d'installation"
-        subtitle={`Semaines fictives lun–ven · cible ${CAPACITE_JOURNEE.montantMin.toLocaleString("fr-CA")}$ · ${CAPACITE_JOURNEE.jobsMin}–${CAPACITE_JOURNEE.jobsMax} jobs · 1 secteur/jour`}
+        subtitle={`Semaines fictives lun–ven · cible ${CAPACITE_JOURNEE.montantMin.toLocaleString("fr-CA")}$ · ${CAPACITE_JOURNEE.jobsMin}–${CAPACITE_JOURNEE.jobsMax} jobs · 1 secteur/jour (+ emprunt si besoin)`}
       />
       <CalendrierClient
         initialRoutes={serialized}

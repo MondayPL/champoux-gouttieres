@@ -9,6 +9,13 @@ export async function POST(req: NextRequest) {
     const startSemaine = Number(body.startSemaine) || 1;
     const semaines = Number(body.semaines) || 4;
 
+    const replaceExisting = body.replaceExisting !== false;
+
+    // When replacing, clear routes first so previously assigned contracts re-enter the pool
+    if (replaceExisting) {
+      await prisma.route.deleteMany({});
+    }
+
     const eligible = await prisma.contrat.findMany({
       where: {
         routeStops: { none: {} },
@@ -38,13 +45,12 @@ export async function POST(req: NextRequest) {
         secteurId: c.secteurId,
         secteurNom: c.secteur?.nom ?? null,
         secteurNumero: c.secteur?.numero ?? null,
+        villeNom: c.villeNom,
+        civique: c.civique,
+        rue: c.rue,
       })),
       { startSemaine, semaines }
     );
-
-    if (body.replaceExisting !== false) {
-      await prisma.route.deleteMany({});
-    }
 
     const installateurs = await prisma.installateur.findMany({
       where: { actif: true },
@@ -52,6 +58,7 @@ export async function POST(req: NextRequest) {
 
     const createdRoutes = [];
     let stopCount = 0;
+    let underTarget = 0;
 
     for (let i = 0; i < optimized.length; i++) {
       const day = optimized[i];
@@ -59,6 +66,8 @@ export async function POST(req: NextRequest) {
         JOURS_SEMAINE.find((j) => j.n === day.jourSemaine)?.label || "";
       const installateur =
         installateurs[i % Math.max(installateurs.length, 1)];
+
+      if (!day.meetsTarget) underTarget++;
 
       const route = await prisma.route.create({
         data: {
@@ -95,7 +104,11 @@ export async function POST(req: NextRequest) {
       created: createdRoutes.length,
       stops: stopCount,
       endSemaine,
+      underTarget,
       routes: createdRoutes,
+      /** Re-run: POST /api/routes/optimiser with { startSemaine, semaines, replaceExisting } */
+      howToRerun:
+        "POST /api/routes/optimiser { startSemaine:1, semaines:4, replaceExisting:true } — ou bouton « Générer le plan » dans Calendrier → Optimisé par IA",
     });
   } catch (e) {
     console.error(e);
