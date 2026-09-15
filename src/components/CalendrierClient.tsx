@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { formatMoney, fullAddress, fullName } from "@/lib/format";
+import { formatMoney, formatPiLinGD, fullAddress, fullName } from "@/lib/format";
 import { JOURS_SEMAINE } from "@/lib/optimizer";
 import { CAPACITE_JOURNEE } from "@/lib/constants";
 
@@ -48,6 +48,8 @@ type ContratLibre = {
   rue: string | null;
   villeNom: string | null;
   montant: number | null;
+  piedLinG?: number | null;
+  piedLinD?: number | null;
   equip?: string | null;
   statut?: string | null;
   secteurId: string | null;
@@ -202,7 +204,7 @@ export function CalendrierClient({
             `semaines 1–${data.endSemaine}` +
             (data.underTarget != null ? ` · ${data.underTarget} jour(s) sous cible` : "") +
             excluded +
-            `. Cibles ≥${CAPACITE_JOURNEE.montantMin}$ / ${CAPACITE_JOURNEE.jobsMin}–${CAPACITE_JOURNEE.jobsMax} jobs.`
+            `. Cibles ${CAPACITE_JOURNEE.montantMin}–${CAPACITE_JOURNEE.montantMax}$ · max ${CAPACITE_JOURNEE.jobsAiMax} jobs/jour · 1 secteur.`
       );
       await refresh();
       setSemaine(1);
@@ -301,6 +303,14 @@ export function CalendrierClient({
   }
 
   async function addLibre(contratId: string, routeId: string) {
+    const route = routes.find((r) => r.id === routeId);
+    if (route && route.stops.length >= CAPACITE_JOURNEE.jobsManualMax) {
+      feedback(
+        false,
+        `Maximum soft atteint (${CAPACITE_JOURNEE.jobsManualMax} arrêts). Retirez un arrêt avant d’en ajouter.`
+      );
+      return;
+    }
     setBusy(true);
     try {
       const res = await fetch(`/api/routes/${routeId}/stops`, {
@@ -371,13 +381,15 @@ export function CalendrierClient({
         <div className="no-print rounded-xl border border-violet-200 bg-violet-50 p-4 text-sm text-violet-950">
           <p className="mb-2 font-semibold">Optimisé par IA (heuristique locale)</p>
           <ul className="mb-3 list-disc space-y-1 pl-5 text-violet-900">
-            <li>Semaines fictives Semaine 1, 2… — lun–ven uniquement</li>
-            <li>Cible &gt; {CAPACITE_JOURNEE.montantMin.toLocaleString("fr-CA")} $ / jour si possible</li>
-            <li>Idéalement {CAPACITE_JOURNEE.jobsMin}–{CAPACITE_JOURNEE.jobsMax} emplois / jour</li>
-            <li>Un secteur primaire (1–7) / jour ; emprunt depuis d&apos;autres secteurs si sous-cible</li>
+            <li>Semaines fictives Semaine 1, 2… — lun–ven uniquement (plusieurs semaines)</li>
+            <li>IA : max {CAPACITE_JOURNEE.jobsAiMax} emplois / jour (cap dur)</li>
+            <li>Cible {CAPACITE_JOURNEE.montantMin.toLocaleString("fr-CA")}–{CAPACITE_JOURNEE.montantMax.toLocaleString("fr-CA")} $ / jour</li>
+            <li>Exactement 1 secteur / jour (pas d&apos;emprunt)</li>
+            <li>Priorité date (plus ancien d&apos;abord), puis montant</li>
             <li>Ordre des arrêts : ville / rue / centroïdes (moins de km)</li>
             <li>Chaque secteur visité ≥ 1× par mois (~4 semaines)</li>
             <li>Exclut les jobs non prêts (pas prêt, en commande, correction, annul…)</li>
+            <li>Ajout manuel possible au-delà de 2 (jusqu&apos;à {CAPACITE_JOURNEE.jobsManualMax})</li>
           </ul>
           <p className="mb-3">Contrats libres (non planifiés) : <strong>{libres.length}</strong></p>
           <div className="flex flex-wrap items-center gap-3">
@@ -402,6 +414,7 @@ export function CalendrierClient({
           <p className="mt-1 text-amber-800">
             Utilisez ▲▼ pour réordonner, « Déplacer vers… » pour changer de jour,
             « Retirer » pour libérer un contrat, et « Ajouter » depuis la liste des contrats libres.
+            L&apos;IA plafonne à {CAPACITE_JOURNEE.jobsAiMax} jobs ; en manuel vous pouvez en ajouter jusqu&apos;à {CAPACITE_JOURNEE.jobsManualMax}.
           </p>
         </div>
       )}
@@ -497,7 +510,9 @@ export function CalendrierClient({
               const r = byJour.get(j.n);
               const t = dayTotals(r);
               const ok =
-                t.n >= CAPACITE_JOURNEE.jobsMin && t.$ >= CAPACITE_JOURNEE.montantMin;
+                t.n > 0 &&
+                t.$ >= CAPACITE_JOURNEE.montantMin &&
+                t.$ <= CAPACITE_JOURNEE.montantMax;
               return (
                 <button
                   key={j.n}
@@ -584,7 +599,14 @@ export function CalendrierClient({
                               {fullAddress(stop.contrat.civique, stop.contrat.rue, stop.contrat.villeNom)}
                             </div>
                             {stop.contrat.telephone && (
-                              <div className="text-xs text-slate-500">{stop.contrat.telephone}</div>
+                              <div className="text-xs font-medium text-slate-700">
+                                ☎ {stop.contrat.telephone}
+                              </div>
+                            )}
+                            {formatPiLinGD(stop.contrat.piedLinG, stop.contrat.piedLinD) && (
+                              <div className="text-xs font-medium text-slate-700">
+                                {formatPiLinGD(stop.contrat.piedLinG, stop.contrat.piedLinD)}
+                              </div>
                             )}
                             <div className="text-xs text-slate-500">
                               {formatMoney(stop.contrat.montant)}
@@ -673,9 +695,17 @@ export function CalendrierClient({
                             </div>
                             <button
                               type="button"
-                              disabled={busy}
+                              disabled={
+                                busy ||
+                                selected.stops.length >= CAPACITE_JOURNEE.jobsManualMax
+                              }
                               onClick={() => addLibre(c.id, selected.id)}
                               className="shrink-0 rounded bg-sky-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                              title={
+                                selected.stops.length >= CAPACITE_JOURNEE.jobsManualMax
+                                  ? `Max soft ${CAPACITE_JOURNEE.jobsManualMax} arrêts`
+                                  : undefined
+                              }
                             >
                               Ajouter
                             </button>
@@ -761,6 +791,11 @@ function InstallerDayCard({
               {stop.contrat.telephone && (
                 <div className="mt-0.5 text-sm font-medium text-slate-800">
                   ☎ {stop.contrat.telephone}
+                </div>
+              )}
+              {formatPiLinGD(stop.contrat.piedLinG, stop.contrat.piedLinD) && (
+                <div className="mt-0.5 text-sm font-medium text-slate-800">
+                  {formatPiLinGD(stop.contrat.piedLinG, stop.contrat.piedLinD)}
                 </div>
               )}
               {showMontants && stop.contrat.montant != null && (

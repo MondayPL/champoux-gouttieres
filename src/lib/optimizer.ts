@@ -233,69 +233,13 @@ export function orderStopsForDay(
   return ordered;
 }
 
-function countRemaining(bySecteur: Map<string, OptimizableContrat[]>): number {
-  let n = 0;
-  for (const list of bySecteur.values()) n += list.length;
-  return n;
-}
-
-function pickBorrowCandidate(
-  bySecteur: Map<string, OptimizableContrat[]>,
-  primaryKey: string,
-  primaryNumero: number | null
-): { key: string; index: number; job: OptimizableContrat } | null {
-  type Cand = {
-    key: string;
-    index: number;
-    job: OptimizableContrat;
-    remainingInSecteur: number;
-    adjacency: number;
-    montant: number;
-  };
-  const cands: Cand[] = [];
-
-  for (const [key, list] of bySecteur) {
-    if (key === primaryKey || list.length === 0) continue;
-    for (let i = 0; i < list.length; i++) {
-      const job = list[i];
-      const num = job.secteurNumero ?? null;
-      const adjacency =
-        primaryNumero != null && num != null
-          ? Math.abs(primaryNumero - num)
-          : 50;
-      cands.push({
-        key,
-        index: i,
-        job,
-        remainingInSecteur: list.length,
-        adjacency,
-        montant: job.montant || 0,
-      });
-    }
-  }
-
-  if (cands.length === 0) return null;
-
-  cands.sort((a, b) => {
-    // Prefer secteurs with fewest remaining (clear small leftovers)
-    if (a.remainingInSecteur !== b.remainingInSecteur) {
-      return a.remainingInSecteur - b.remainingInSecteur;
-    }
-    // Then geographically nearby by sector number
-    if (a.adjacency !== b.adjacency) return a.adjacency - b.adjacency;
-    // Highest value
-    if (b.montant !== a.montant) return b.montant - a.montant;
-    return 0;
-  });
-
-  return cands[0];
-}
-
 /**
  * Planificateur de tournées (heuristique, sans API) — semaines fictives :
  * - Lun–Ven seulement (ignore les dates calendrier)
- * - Cible ≥ 5000 $ / jour et 4–5 emplois si l'inventaire le permet
- * - Un secteur primaire par jour ; emprunt depuis d'autres secteurs si sous-cible
+ * - Cap IA : max 2 emplois / jour
+ * - Cible revenu 4000–6000 $ / jour (remplir jusqu’à ≥4000 ; ne pas ajouter si ça dépasse ~6000)
+ * - Exactement 1 secteur par jour (pas d’emprunt depuis d’autres secteurs)
+ * - Priorité date (plus ancien d’abord), puis montant
  * - Chaque secteur 1–7 au moins 1× par mois (rotation sur ~4 semaines)
  * - Arrêts ordonnés (ville / rue / centroïdes) pour limiter les km
  */
@@ -315,14 +259,13 @@ export function optimizeRoutes(
     bySecteur.get(key)!.push({ ...c });
   }
 
+  // Priorité date (plus ancien d’abord), montant en départage
   for (const [, list] of bySecteur) {
     list.sort((a, b) => {
-      const ma = a.montant || 0;
-      const mb = b.montant || 0;
-      if (mb !== ma) return mb - ma;
-      const da = a.date?.getTime() ?? 0;
-      const db = b.date?.getTime() ?? 0;
-      return da - db;
+      const da = a.date?.getTime() ?? Number.POSITIVE_INFINITY;
+      const db = b.date?.getTime() ?? Number.POSITIVE_INFINITY;
+      if (da !== db) return da - db;
+      return (b.montant || 0) - (a.montant || 0);
     });
   }
 
@@ -332,8 +275,14 @@ export function optimizeRoutes(
     const num = list[0]?.secteurNumero;
     const missingBonus =
       num != null && allNums.includes(num) && !visited.has(num) ? 1_000_000 : 0;
+    const top = list.slice(0, CAPACITE_JOURNEE.jobsAiMax);
+    const topSum = top.reduce((s, x) => s + (x.montant || 0), 0);
+    const canHitMin = topSum >= CAPACITE_JOURNEE.montantMin ? 100_000 : 0;
     const volume = list.reduce((s, x) => s + (x.montant || 0), 0);
-    return missingBonus + volume * 10 + list.length;
+    // Prefer oldest backlog (earlier first date)
+    const oldest = list[0]?.date?.getTime() ?? Number.POSITIVE_INFINITY;
+    const ageBonus = Number.isFinite(oldest) ? Math.max(0, 2_000_000_000_000 - oldest) / 1e9 : 0;
+    return missingBonus + canHitMin + volume * 10 + list.length + ageBonus;
   }
 
   const remainingKeys = () =>
@@ -357,17 +306,11 @@ export function optimizeRoutes(
       let chosenKey = keys[0];
       for (const k of keys) {
         const list = bySecteur.get(k)!;
-        const top = list.slice(0, CAPACITE_JOURNEE.jobsMax);
+        const top = list.slice(0, CAPACITE_JOURNEE.jobsAiMax);
         const sum = top.reduce((acc, x) => acc + (x.montant || 0), 0);
-        if (
-          list.length >= CAPACITE_JOURNEE.jobsMin &&
-          sum >= CAPACITE_JOURNEE.montantMin
-        ) {
+        if (sum >= CAPACITE_JOURNEE.montantMin) {
           chosenKey = k;
           break;
-        }
-        if (list.length >= CAPACITE_JOURNEE.jobsMin) {
-          chosenKey = k;
         }
       }
 
@@ -376,88 +319,35 @@ export function optimizeRoutes(
       let montantTotal = 0;
       let charge = 0;
 
-      // 1) Pack from primary secteur
-      while (queue.length > 0 && stops.length < CAPACITE_JOURNEE.jobsMax) {
+      // Pack from ONE secteur only — hard cap jobsAiMax, band 4–6 k$
+      while (queue.length > 0 && stops.length < CAPACITE_JOURNEE.jobsAiMax) {
         const next = queue[0];
-        const nextCharge =
-          (next.piedLinG || 0) + (next.piedLinD || 0) || 40;
+        const nextAmt = next.montant || 0;
 
+        // Already in target band: only add if it stays ≤ montantMax
         if (
-          stops.length >= CAPACITE_JOURNEE.jobsMin &&
+          stops.length > 0 &&
           montantTotal >= CAPACITE_JOURNEE.montantMin &&
-          stops.length >= CAPACITE_JOURNEE.jobsMax
+          montantTotal + nextAmt > CAPACITE_JOURNEE.montantMax
         ) {
           break;
         }
 
         queue.shift();
         stops.push(next);
-        montantTotal += next.montant || 0;
-        charge += nextCharge;
-      }
-
-      const primaryNumero = stops[0]?.secteurNumero ?? null;
-
-      // 2) Borrow from other secteurs until target met or inventory exhausted
-      const underJobs = () => stops.length < CAPACITE_JOURNEE.jobsMin;
-      const underMontant = () => montantTotal < CAPACITE_JOURNEE.montantMin;
-      const canTakeMore = () => stops.length < CAPACITE_JOURNEE.jobsMax;
-
-      while (
-        canTakeMore() &&
-        (underJobs() || underMontant()) &&
-        countRemaining(bySecteur) > 0
-      ) {
-        const pick = pickBorrowCandidate(bySecteur, chosenKey, primaryNumero);
-        if (!pick) break;
-        const list = bySecteur.get(pick.key)!;
-        const [job] = list.splice(pick.index, 1);
-        stops.push(job);
-        montantTotal += job.montant || 0;
-        charge += (job.piedLinG || 0) + (job.piedLinD || 0) || 40;
-      }
-
-      // 3) Never leave 1–2 jobs if ≥4 unassigned remain anywhere
-      while (
-        stops.length < CAPACITE_JOURNEE.jobsMin &&
-        stops.length < CAPACITE_JOURNEE.jobsMax &&
-        countRemaining(bySecteur) >=
-          CAPACITE_JOURNEE.jobsMin - stops.length
-      ) {
-        // Prefer filling to jobsMin whenever enough inventory exists
-        const pick = pickBorrowCandidate(bySecteur, chosenKey, primaryNumero);
-        if (!pick) break;
-        // Extra guard from the requirement: don't leave thin days if ≥4 remain
-        const remaining = countRemaining(bySecteur);
-        if (stops.length <= 2 && remaining < 4 && !underMontant()) break;
-        const list = bySecteur.get(pick.key)!;
-        const [job] = list.splice(pick.index, 1);
-        stops.push(job);
-        montantTotal += job.montant || 0;
-        charge += (job.piedLinG || 0) + (job.piedLinD || 0) || 40;
-      }
-
-      // Stronger rule: if day has 1–2 jobs and ≥4 unassigned remain, keep borrowing to jobsMin
-      while (
-        stops.length <= 2 &&
-        countRemaining(bySecteur) >= 4 &&
-        stops.length < CAPACITE_JOURNEE.jobsMax
-      ) {
-        const pick = pickBorrowCandidate(bySecteur, chosenKey, primaryNumero);
-        if (!pick) break;
-        const list = bySecteur.get(pick.key)!;
-        const [job] = list.splice(pick.index, 1);
-        stops.push(job);
-        montantTotal += job.montant || 0;
-        charge += (job.piedLinG || 0) + (job.piedLinD || 0) || 40;
+        montantTotal += nextAmt;
+        charge += (next.piedLinG || 0) + (next.piedLinD || 0) || 40;
       }
 
       if (stops.length === 0) continue;
 
       const ordered = orderStopsForDay(stops);
-      const num = ordered.find((x) => x.secteurId === (chosenKey === "__aucun__" ? null : chosenKey))
-        ?.secteurNumero ?? ordered[0]?.secteurNumero ?? null;
-      if (num != null) visited.add(num);
+      const primaryNumero =
+        ordered.find((x) => (x.secteurId || "__aucun__") === chosenKey)
+          ?.secteurNumero ??
+        ordered[0]?.secteurNumero ??
+        null;
+      if (primaryNumero != null) visited.add(primaryNumero);
 
       const primaryStop =
         ordered.find((x) => (x.secteurId || "__aucun__") === chosenKey) ||
@@ -469,13 +359,13 @@ export function optimizeRoutes(
         jourLabel: jour.label,
         secteurId: chosenKey === "__aucun__" ? null : chosenKey,
         secteurNom: primaryStop?.secteurNom ?? null,
-        secteurNumero: primaryNumero ?? num,
+        secteurNumero: primaryNumero,
         stops: ordered,
         charge,
         montantTotal,
         meetsTarget:
-          ordered.length >= CAPACITE_JOURNEE.jobsMin &&
-          montantTotal >= CAPACITE_JOURNEE.montantMin,
+          montantTotal >= CAPACITE_JOURNEE.montantMin &&
+          montantTotal <= CAPACITE_JOURNEE.montantMax,
       });
     }
   }

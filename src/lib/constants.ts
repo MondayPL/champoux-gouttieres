@@ -1,10 +1,13 @@
 /** Capacité heuristique — objectifs de tournée (semaine de travail) */
 export const CAPACITE_JOURNEE = {
-  /** Montant cible minimum par jour ($) */
-  montantMin: 5000,
-  /** Nombre idéal d'emplois par jour */
-  jobsMin: 4,
-  jobsMax: 5,
+  /** Montant cible minimum par jour ($) — bande IA 4–6 k$ */
+  montantMin: 4000,
+  /** Soft ceiling : éviter d’ajouter un job qui dépasse nettement ~6000 $ */
+  montantMax: 6000,
+  /** Cap dur IA : max emplois par jour en auto-plan */
+  jobsAiMax: 2,
+  /** Soft max ajouts manuels (ne bloque pas à jobsAiMax) */
+  jobsManualMax: 5,
   /** Soft cap pi.lin si renseigné */
   piLinMax: 400,
 } as const;
