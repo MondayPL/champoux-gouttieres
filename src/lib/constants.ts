@@ -4,8 +4,10 @@ export const CAPACITE_JOURNEE = {
   montantMin: 4000,
   /** Soft ceiling : éviter d’ajouter un job qui dépasse nettement ~6000 $ */
   montantMax: 6000,
-  /** Cap dur IA : max emplois par jour en auto-plan */
+  /** Soft target IA : emplois préférés / jour (défaut 2) */
   jobsAiMax: 2,
+  /** Soft max IA : 3e job seulement si total encore < montantMin */
+  jobsAiSoftMax: 3,
   /** Soft max ajouts manuels (ne bloque pas à jobsAiMax) */
   jobsManualMax: 5,
   /** Soft cap pi.lin si renseigné */

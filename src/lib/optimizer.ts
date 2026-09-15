@@ -233,13 +233,76 @@ export function orderStopsForDay(
   return ordered;
 }
 
+/** Distance au bandeau 4–6 k$ (0 = dedans). Plus bas = mieux. */
+function distanceToBand(total: number): number {
+  if (total < CAPACITE_JOURNEE.montantMin) return CAPACITE_JOURNEE.montantMin - total;
+  if (total > CAPACITE_JOURNEE.montantMax) return total - CAPACITE_JOURNEE.montantMax;
+  return 0;
+}
+
+/** Dépassement au-delà de montantMax. */
+function overshootMax(total: number): number {
+  return Math.max(0, total - CAPACITE_JOURNEE.montantMax);
+}
+
+/** Seuil « dépassement sauvage » au-delà de ~6000 $ */
+const WILD_OVERSHOOT = 800;
+
+/**
+ * Parmi les jobs restants (déjà triés date), choisit l’index qui amène
+ * le total le plus près du bandeau 4–6 k$ (préfère atterrir dedans).
+ * - requireStayUnderMax : refuse tout total > montantMax
+ * - sinon refuse seulement un dépassement « sauvage »
+ */
+function pickBestNextIndex(
+  queue: OptimizableContrat[],
+  montantTotal: number,
+  opts: { requireStayUnderMax?: boolean } = {}
+): number | null {
+  if (queue.length === 0) return null;
+
+  let bestI: number | null = null;
+  let bestOutside = 1;
+  let bestDist = Number.POSITIVE_INFINITY;
+  let bestOver = Number.POSITIVE_INFINITY;
+
+  for (let i = 0; i < queue.length; i++) {
+    const amt = queue[i].montant || 0;
+    const t = montantTotal + amt;
+    const over = overshootMax(t);
+
+    if (opts.requireStayUnderMax && t > CAPACITE_JOURNEE.montantMax) continue;
+    if (over > WILD_OVERSHOOT) continue;
+
+    const dist = distanceToBand(t);
+    const outside = dist === 0 ? 0 : 1;
+
+    if (
+      bestI == null ||
+      outside < bestOutside ||
+      (outside === bestOutside && dist < bestDist) ||
+      (outside === bestOutside && dist === bestDist && over < bestOver) ||
+      (outside === bestOutside &&
+        dist === bestDist &&
+        over === bestOver &&
+        i < bestI)
+    ) {
+      bestI = i;
+      bestOutside = outside;
+      bestDist = dist;
+      bestOver = over;
+    }
+  }
+  return bestI;
+}
+
 /**
  * Planificateur de tournées (heuristique, sans API) — semaines fictives :
  * - Lun–Ven seulement (ignore les dates calendrier)
- * - Cap IA : max 2 emplois / jour
- * - Cible revenu 4000–6000 $ / jour (remplir jusqu’à ≥4000 ; ne pas ajouter si ça dépasse ~6000)
+ * - Soft target IA : 2 emplois / jour ; 3e si total < 4000 $ (jobsAiSoftMax)
+ * - Cible revenu 4000–6000 $ / jour (choix du 2e/3e job pour atterrir dans la bande)
  * - Exactement 1 secteur par jour (pas d’emprunt depuis d’autres secteurs)
- * - Priorité date (plus ancien d’abord), puis montant
+ * - Priorité date (plus ancien d’abord comme ancre), puis fit bande pour ajouts
  * - Chaque secteur 1–7 au moins 1× par mois (rotation sur ~4 semaines)
  * - Arrêts ordonnés (ville / rue / centroïdes) pour limiter les km
  */
@@ -275,7 +338,7 @@ export function optimizeRoutes(
     const num = list[0]?.secteurNumero;
     const missingBonus =
       num != null && allNums.includes(num) && !visited.has(num) ? 1_000_000 : 0;
-    const top = list.slice(0, CAPACITE_JOURNEE.jobsAiMax);
+    const top = list.slice(0, CAPACITE_JOURNEE.jobsAiSoftMax);
     const topSum = top.reduce((s, x) => s + (x.montant || 0), 0);
     const canHitMin = topSum >= CAPACITE_JOURNEE.montantMin ? 100_000 : 0;
     const volume = list.reduce((s, x) => s + (x.montant || 0), 0);
@@ -306,7 +369,7 @@ export function optimizeRoutes(
       let chosenKey = keys[0];
       for (const k of keys) {
         const list = bySecteur.get(k)!;
-        const top = list.slice(0, CAPACITE_JOURNEE.jobsAiMax);
+        const top = list.slice(0, CAPACITE_JOURNEE.jobsAiSoftMax);
         const sum = top.reduce((acc, x) => acc + (x.montant || 0), 0);
         if (sum >= CAPACITE_JOURNEE.montantMin) {
           chosenKey = k;
@@ -319,24 +382,68 @@ export function optimizeRoutes(
       let montantTotal = 0;
       let charge = 0;
 
-      // Pack from ONE secteur only — hard cap jobsAiMax, band 4–6 k$
-      while (queue.length > 0 && stops.length < CAPACITE_JOURNEE.jobsAiMax) {
-        const next = queue[0];
-        const nextAmt = next.montant || 0;
+      // Pack from ONE secteur only — soft target 2, optional 3rd if under 4 k$
+      // Anchor: oldest job (date priority)
+      {
+        const first = queue.shift()!;
+        const amt = first.montant || 0;
+        stops.push(first);
+        montantTotal += amt;
+        charge += (first.piedLinG || 0) + (first.piedLinD || 0) || 40;
+      }
 
-        // Already in target band: only add if it stays ≤ montantMax
-        if (
-          stops.length > 0 &&
-          montantTotal >= CAPACITE_JOURNEE.montantMin &&
-          montantTotal + nextAmt > CAPACITE_JOURNEE.montantMax
-        ) {
-          break;
-        }
-
-        queue.shift();
+      const takeAt = (idx: number) => {
+        const next = queue.splice(idx, 1)[0];
+        const amt = next.montant || 0;
         stops.push(next);
-        montantTotal += nextAmt;
+        montantTotal += amt;
         charge += (next.piedLinG || 0) + (next.piedLinD || 0) || 40;
+      };
+
+      // 2nd job (soft target jobsAiMax): prefer band fit among remaining
+      while (
+        stops.length < CAPACITE_JOURNEE.jobsAiMax &&
+        queue.length > 0
+      ) {
+        const alreadyAtMin = montantTotal >= CAPACITE_JOURNEE.montantMin;
+        // If oldest alone ≥4000, only add a small 2nd that stays ≤6000
+        let idx = pickBestNextIndex(queue, montantTotal, {
+          requireStayUnderMax: true,
+        });
+        if (idx == null && !alreadyAtMin) {
+          idx = pickBestNextIndex(queue, montantTotal, {
+            requireStayUnderMax: false,
+          });
+        }
+        if (idx == null) break;
+        takeAt(idx);
+      }
+
+      // Optional 3rd job only if still under 4000 $
+      if (
+        stops.length >= CAPACITE_JOURNEE.jobsAiMax &&
+        stops.length < CAPACITE_JOURNEE.jobsAiSoftMax &&
+        montantTotal < CAPACITE_JOURNEE.montantMin &&
+        queue.length > 0
+      ) {
+        let idx = pickBestNextIndex(queue, montantTotal, {
+          requireStayUnderMax: true,
+        });
+        if (idx == null) {
+          idx = pickBestNextIndex(queue, montantTotal, {
+            requireStayUnderMax: false,
+          });
+        }
+        if (idx != null) {
+          const candidateAmt = queue[idx].montant || 0;
+          const newTotal = montantTotal + candidateAmt;
+          const improves =
+            distanceToBand(newTotal) < distanceToBand(montantTotal) ||
+            newTotal <= CAPACITE_JOURNEE.montantMax;
+          if (improves && overshootMax(newTotal) <= WILD_OVERSHOOT) {
+            takeAt(idx);
+          }
+        }
       }
 
       if (stops.length === 0) continue;

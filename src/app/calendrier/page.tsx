@@ -1,7 +1,6 @@
 import { prisma } from "@/lib/prisma";
 import { PageHeader } from "@/components/PageHeader";
 import { CalendrierClient } from "@/components/CalendrierClient";
-import { CAPACITE_JOURNEE } from "@/lib/constants";
 
 export const dynamic = "force-dynamic";
 
@@ -79,7 +78,7 @@ export default async function CalendrierPage() {
     <div>
       <PageHeader
         title="Calendrier d'installation"
-        subtitle={`IA ${CAPACITE_JOURNEE.jobsAiMax} jobs/jour · ${CAPACITE_JOURNEE.montantMin.toLocaleString("fr-CA")}–${CAPACITE_JOURNEE.montantMax.toLocaleString("fr-CA")} $ · 1 secteur · priorité date · ajout manuel possible`}
+        subtitle="IA : 2 jobs (3e si sous 4 k$) · 4–6 k$ · 1 secteur · date"
       />
       <CalendrierClient
         initialRoutes={serialized}

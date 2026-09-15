@@ -204,7 +204,7 @@ export function CalendrierClient({
             `semaines 1–${data.endSemaine}` +
             (data.underTarget != null ? ` · ${data.underTarget} jour(s) sous cible` : "") +
             excluded +
-            `. Cibles ${CAPACITE_JOURNEE.montantMin}–${CAPACITE_JOURNEE.montantMax}$ · max ${CAPACITE_JOURNEE.jobsAiMax} jobs/jour · 1 secteur.`
+            `. Cibles ${CAPACITE_JOURNEE.montantMin}–${CAPACITE_JOURNEE.montantMax}$ · IA ${CAPACITE_JOURNEE.jobsAiMax} jobs (3e si sous 4 k$) · 1 secteur.`
       );
       await refresh();
       setSemaine(1);
@@ -382,14 +382,14 @@ export function CalendrierClient({
           <p className="mb-2 font-semibold">Optimisé par IA (heuristique locale)</p>
           <ul className="mb-3 list-disc space-y-1 pl-5 text-violet-900">
             <li>Semaines fictives Semaine 1, 2… — lun–ven uniquement (plusieurs semaines)</li>
-            <li>IA : max {CAPACITE_JOURNEE.jobsAiMax} emplois / jour (cap dur)</li>
+            <li>IA : {CAPACITE_JOURNEE.jobsAiMax} jobs / jour (3e si sous {CAPACITE_JOURNEE.montantMin.toLocaleString("fr-CA")} $)</li>
             <li>Cible {CAPACITE_JOURNEE.montantMin.toLocaleString("fr-CA")}–{CAPACITE_JOURNEE.montantMax.toLocaleString("fr-CA")} $ / jour</li>
             <li>Exactement 1 secteur / jour (pas d&apos;emprunt)</li>
             <li>Priorité date (plus ancien d&apos;abord), puis montant</li>
             <li>Ordre des arrêts : ville / rue / centroïdes (moins de km)</li>
             <li>Chaque secteur visité ≥ 1× par mois (~4 semaines)</li>
             <li>Exclut les jobs non prêts (pas prêt, en commande, correction, annul…)</li>
-            <li>Ajout manuel possible au-delà de 2 (jusqu&apos;à {CAPACITE_JOURNEE.jobsManualMax})</li>
+            <li>Ajout manuel possible au-delà de l&apos;IA (jusqu&apos;à {CAPACITE_JOURNEE.jobsManualMax})</li>
           </ul>
           <p className="mb-3">Contrats libres (non planifiés) : <strong>{libres.length}</strong></p>
           <div className="flex flex-wrap items-center gap-3">
@@ -414,7 +414,7 @@ export function CalendrierClient({
           <p className="mt-1 text-amber-800">
             Utilisez ▲▼ pour réordonner, « Déplacer vers… » pour changer de jour,
             « Retirer » pour libérer un contrat, et « Ajouter » depuis la liste des contrats libres.
-            L&apos;IA plafonne à {CAPACITE_JOURNEE.jobsAiMax} jobs ; en manuel vous pouvez en ajouter jusqu&apos;à {CAPACITE_JOURNEE.jobsManualMax}.
+            L&apos;IA vise {CAPACITE_JOURNEE.jobsAiMax} jobs (3e si sous {CAPACITE_JOURNEE.montantMin.toLocaleString("fr-CA")} $) ; en manuel vous pouvez en ajouter jusqu&apos;à {CAPACITE_JOURNEE.jobsManualMax}.
           </p>
         </div>
       )}
