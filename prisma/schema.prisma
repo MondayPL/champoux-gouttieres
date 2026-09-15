@@ -1,0 +1,155 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Secteurs numérotés 1–7 (feuille Ville)
+model Secteur {
+  id        String    @id @default(cuid())
+  numero    Int       @unique
+  nom       String
+  couleur   String    @default("#3B82F6")
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  villes    Ville[]
+  contrats  Contrat[]
+  routes    Route[]
+}
+
+model Ville {
+  id        String   @id @default(cuid())
+  nom       String
+  nomNorm   String
+  secteurId String
+  secteur   Secteur  @relation(fields: [secteurId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([nomNorm])
+  @@index([secteurId])
+}
+
+/// Charte des couleurs (feuille Couleur)
+model Couleur {
+  id        String   @id @default(cuid())
+  nomFr     String
+  nomEn     String?
+  colonne   Int      @default(1)
+  ordre     Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+/// Liste de suivi 2026 — contrats / jobs gouttières
+model Contrat {
+  id           String      @id @default(cuid())
+  numContrat   String?
+  date         DateTime?
+  nom          String?
+  prenom       String?
+  telephone    String?
+  civique      String?
+  rue          String?
+  villeNom     String?
+  gouttiere    String?
+  piedLinG     Float?
+  descente     String?
+  piedLinD     Float?
+  equip        String? // nacelle / équipement
+  enlvExist    Boolean     @default(false)
+  friseIncl    Boolean     @default(false)
+  toitTole     Boolean     @default(false)
+  montant      Float?
+  grille       String?
+  piedLinGr    Float?
+  statut       String? // notes libres (feuille Excel)
+  colonne2     String?
+  secteurId    String?
+  secteur      Secteur?    @relation(fields: [secteurId], references: [id], onDelete: SetNull)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  routeStops   RouteStop[]
+
+  @@index([villeNom])
+  @@index([numContrat])
+  @@index([secteurId])
+  @@index([date])
+}
+
+/// Compte rendu — NOM, MONTANT, DATE FAIT
+model CompteRendu {
+  id        String    @id @default(cuid())
+  nom       String
+  montant   Float?
+  dateFait  DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([dateFait])
+}
+
+/// Liste de réparation 2026
+model Reparation {
+  id               String    @id @default(cuid())
+  numContrat       String?
+  date             DateTime?
+  nom              String?
+  prenom           String?
+  civique          String?
+  rue              String?
+  villeNom         String?
+  travaux          String?
+  montant          Float?
+  contratGouttiere String? // ex. #29110
+  etat             String? // fait | à faire
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@index([etat])
+}
+
+model Installateur {
+  id        String   @id @default(cuid())
+  nom       String
+  telephone String?
+  actif     Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  routes    Route[]
+}
+
+model Route {
+  id             String        @id @default(cuid())
+  /// Semaine fictive de travail (1, 2, 3…) — pas de date calendrier réelle
+  semaine        Int
+  /// Jour de la semaine : 1=Lundi … 5=Vendredi
+  jourSemaine    Int
+  nom            String?
+  notes          String?
+  secteurId      String?
+  secteur        Secteur?      @relation(fields: [secteurId], references: [id], onDelete: SetNull)
+  installateurId String?
+  installateur   Installateur? @relation(fields: [installateurId], references: [id], onDelete: SetNull)
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  stops          RouteStop[]
+
+  @@unique([semaine, jourSemaine])
+  @@index([semaine])
+}
+
+model RouteStop {
+  id        String   @id @default(cuid())
+  routeId   String
+  route     Route    @relation(fields: [routeId], references: [id], onDelete: Cascade)
+  contratId String
+  contrat   Contrat  @relation(fields: [contratId], references: [id], onDelete: Cascade)
+  ordre     Int      @default(0)
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([routeId, contratId])
+}
