@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { optimizeRoutes, JOURS_SEMAINE } from "@/lib/optimizer";
 import { fullAddress, fullName } from "@/lib/format";
+import { isContratPretPourPlan } from "@/lib/contratPret";
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,7 +17,7 @@ export async function POST(req: NextRequest) {
       await prisma.route.deleteMany({});
     }
 
-    const eligible = await prisma.contrat.findMany({
+    const pool = await prisma.contrat.findMany({
       where: {
         routeStops: { none: {} },
         OR: [{ montant: { gt: 0 } }, { piedLinG: { gt: 0 } }],
@@ -24,12 +25,19 @@ export async function POST(req: NextRequest) {
       include: { secteur: true },
     });
 
+    const eligible = pool.filter((c) => isContratPretPourPlan(c.statut));
+    const excludedUnready = pool.length - eligible.length;
+
     if (eligible.length === 0) {
       return NextResponse.json({
         created: 0,
         stops: 0,
         routes: [],
-        message: "Aucun contrat libre à planifier.",
+        excludedUnready,
+        message:
+          excludedUnready > 0
+            ? `Aucun contrat prêt à planifier (${excludedUnready} non prêt(s) exclu(s) : pas prêt, en commande, correction, annul…).`
+            : "Aucun contrat libre à planifier.",
       });
     }
 
@@ -100,11 +108,22 @@ export async function POST(req: NextRequest) {
       startSemaine
     );
 
+    const messageParts = [
+      `Plan généré : ${createdRoutes.length} journée(s), ${stopCount} emploi(s), semaines 1–${endSemaine}.`,
+    ];
+    if (excludedUnready > 0) {
+      messageParts.push(
+        `${excludedUnready} contrat(s) non prêt(s) exclus (pas prêt, en commande, correction, annul…).`
+      );
+    }
+
     return NextResponse.json({
       created: createdRoutes.length,
       stops: stopCount,
       endSemaine,
       underTarget,
+      excludedUnready,
+      message: messageParts.join(" "),
       routes: createdRoutes,
       /** Re-run: POST /api/routes/optimiser with { startSemaine, semaines, replaceExisting } */
       howToRerun:

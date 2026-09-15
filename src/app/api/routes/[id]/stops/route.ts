@@ -83,3 +83,33 @@ export async function PATCH(req: NextRequest, ctx: Ctx) {
     return NextResponse.json({ error: "Erreur de déplacement." }, { status: 500 });
   }
 }
+
+export async function DELETE(req: NextRequest, ctx: Ctx) {
+  try {
+    const { id: routeId } = await ctx.params;
+    const body = await req.json().catch(() => ({}));
+    const stopId = body.stopId as string | undefined;
+    if (!stopId) {
+      return NextResponse.json({ error: "stopId requis." }, { status: 400 });
+    }
+    const existing = await prisma.routeStop.findFirst({
+      where: { id: stopId, routeId },
+    });
+    if (!existing) {
+      return NextResponse.json({ error: "Arrêt introuvable sur cette tournée." }, { status: 404 });
+    }
+    await prisma.routeStop.delete({ where: { id: stopId } });
+    const remaining = await prisma.routeStop.findMany({
+      where: { routeId },
+      orderBy: { ordre: "asc" },
+    });
+    await prisma.$transaction(
+      remaining.map((s, i) =>
+        prisma.routeStop.update({ where: { id: s.id }, data: { ordre: i } })
+      )
+    );
+    return NextResponse.json({ ok: true });
+  } catch {
+    return NextResponse.json({ error: "Erreur de retrait." }, { status: 500 });
+  }
+}

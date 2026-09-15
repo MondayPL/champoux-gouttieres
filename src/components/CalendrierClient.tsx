@@ -1,27 +1,31 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { formatMoney, fullAddress, fullName } from "@/lib/format";
 import { JOURS_SEMAINE } from "@/lib/optimizer";
 import { CAPACITE_JOURNEE } from "@/lib/constants";
 
+type ContratFields = {
+  id: string;
+  numContrat: string | null;
+  nom: string | null;
+  prenom: string | null;
+  telephone: string | null;
+  civique: string | null;
+  rue: string | null;
+  villeNom: string | null;
+  montant: number | null;
+  piedLinG: number | null;
+  piedLinD: number | null;
+  equip: string | null;
+  statut: string | null;
+};
+
 type Stop = {
   id: string;
   ordre: number;
-  contrat: {
-    id: string;
-    numContrat: string | null;
-    nom: string | null;
-    prenom: string | null;
-    telephone: string | null;
-    civique: string | null;
-    rue: string | null;
-    villeNom: string | null;
-    montant: number | null;
-    piedLinG: number | null;
-    piedLinD: number | null;
-  };
+  contrat: ContratFields;
 };
 
 type Route = {
@@ -44,6 +48,8 @@ type ContratLibre = {
   rue: string | null;
   villeNom: string | null;
   montant: number | null;
+  equip?: string | null;
+  statut?: string | null;
   secteurId: string | null;
   secteur: { id: string; nom: string; numero: number; couleur: string } | null;
 };
@@ -52,9 +58,63 @@ const JOUR_LABEL: Record<number, string> = Object.fromEntries(
   JOURS_SEMAINE.map((j) => [j.n, j.label])
 );
 
+function normalizeStopContrat(c: Partial<ContratFields> & { id: string }): ContratFields {
+  return {
+    id: c.id,
+    numContrat: c.numContrat ?? null,
+    nom: c.nom ?? null,
+    prenom: c.prenom ?? null,
+    telephone: c.telephone ?? null,
+    civique: c.civique ?? null,
+    rue: c.rue ?? null,
+    villeNom: c.villeNom ?? null,
+    montant: c.montant ?? null,
+    piedLinG: c.piedLinG ?? null,
+    piedLinD: c.piedLinD ?? null,
+    equip: c.equip ?? null,
+    statut: c.statut ?? null,
+  };
+}
+
+function mapApiRoutes(data: Route[]): Route[] {
+  return data.map((r) => ({
+    ...r,
+    stops: (r.stops || []).map((s) => ({
+      ...s,
+      contrat: normalizeStopContrat(s.contrat),
+    })),
+  }));
+}
+
+function EquipBadge({ equip }: { equip: string | null | undefined }) {
+  if (!equip?.trim()) return null;
+  const isNacelle = /nacelle/i.test(equip);
+  return (
+    <span
+      className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold ${
+        isNacelle
+          ? "bg-orange-100 text-orange-800"
+          : "bg-sky-100 text-sky-800"
+      }`}
+      title={equip}
+    >
+      {isNacelle ? "🏗️ Nacelle" : `⚙️ ${equip}`}
+    </span>
+  );
+}
+
+function StatutNote({ statut }: { statut: string | null | undefined }) {
+  if (!statut?.trim()) return null;
+  return (
+    <div className="mt-1 text-xs text-amber-800/90" title={statut}>
+      <span className="font-medium text-amber-900">Notes :</span> {statut}
+    </div>
+  );
+}
+
 export function CalendrierClient({
   initialRoutes,
-  contratsLibres,
+  contratsLibres: initialLibres,
   maxSemaine,
 }: {
   initialRoutes: Route[];
@@ -62,7 +122,8 @@ export function CalendrierClient({
   maxSemaine: number;
 }) {
   const router = useRouter();
-  const [routes, setRoutes] = useState(initialRoutes);
+  const [routes, setRoutes] = useState(() => mapApiRoutes(initialRoutes));
+  const [libres, setLibres] = useState(initialLibres);
   const [semaine, setSemaine] = useState(
     initialRoutes[0]?.semaine ?? 1
   );
@@ -74,9 +135,18 @@ export function CalendrierClient({
   );
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [messageOk, setMessageOk] = useState(true);
   const [nbSemainesOpt, setNbSemainesOpt] = useState(4);
   const [showMontants, setShowMontants] = useState(true);
   const [printScope, setPrintScope] = useState<"semaine" | "jour">("semaine");
+
+  useEffect(() => {
+    setRoutes(mapApiRoutes(initialRoutes));
+  }, [initialRoutes]);
+
+  useEffect(() => {
+    setLibres(initialLibres);
+  }, [initialLibres]);
 
   const selected = routes.find((r) => r.id === selectedRouteId) || null;
 
@@ -94,10 +164,15 @@ export function CalendrierClient({
 
   const maxS = Math.max(maxSemaine, ...routes.map((r) => r.semaine), 1);
 
+  function feedback(ok: boolean, text: string) {
+    setMessageOk(ok);
+    setMessage(text);
+  }
+
   async function refresh() {
     const res = await fetch("/api/routes");
     const data = await res.json();
-    setRoutes(data);
+    setRoutes(mapApiRoutes(data));
     router.refresh();
   }
 
@@ -116,18 +191,25 @@ export function CalendrierClient({
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Optimisation échouée");
-      setMessage(
-        `Plan généré : ${data.created} journée(s), ${data.stops} emploi(s), ` +
-          `semaines 1–${data.endSemaine}` +
-          (data.underTarget != null ? ` · ${data.underTarget} jour(s) sous cible` : "") +
-          `. Cibles ≥${CAPACITE_JOURNEE.montantMin}$ / ${CAPACITE_JOURNEE.jobsMin}–${CAPACITE_JOURNEE.jobsMax} jobs (emprunt inter-secteurs si besoin).`
+      const excluded =
+        data.excludedUnready != null && data.excludedUnready > 0
+          ? ` · ${data.excludedUnready} non prêt(s) exclu(s)`
+          : "";
+      feedback(
+        true,
+        data.message ||
+          `Plan généré : ${data.created} journée(s), ${data.stops} emploi(s), ` +
+            `semaines 1–${data.endSemaine}` +
+            (data.underTarget != null ? ` · ${data.underTarget} jour(s) sous cible` : "") +
+            excluded +
+            `. Cibles ≥${CAPACITE_JOURNEE.montantMin}$ / ${CAPACITE_JOURNEE.jobsMin}–${CAPACITE_JOURNEE.jobsMax} jobs.`
       );
       await refresh();
       setSemaine(1);
       if (data.routes?.[0]?.id) setSelectedRouteId(data.routes[0].id);
       setMode("voir");
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Erreur");
+      feedback(false, e instanceof Error ? e.message : "Erreur");
     } finally {
       setBusy(false);
     }
@@ -143,22 +225,23 @@ export function CalendrierClient({
       });
       if (!res.ok) throw new Error((await res.json()).error);
       await refresh();
+      feedback(true, "Ordre des arrêts mis à jour.");
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Erreur");
+      feedback(false, e instanceof Error ? e.message : "Erreur");
     } finally {
       setBusy(false);
     }
   }
 
   function moveUp(route: Route, index: number) {
-    if (index <= 0) return;
+    if (index <= 0 || busy) return;
     const ids = route.stops.map((s) => s.id);
     [ids[index - 1], ids[index]] = [ids[index], ids[index - 1]];
     reorder(route.id, ids);
   }
 
   function moveDown(route: Route, index: number) {
-    if (index >= route.stops.length - 1) return;
+    if (index >= route.stops.length - 1 || busy) return;
     const ids = route.stops.map((s) => s.id);
     [ids[index], ids[index + 1]] = [ids[index + 1], ids[index]];
     reorder(route.id, ids);
@@ -180,6 +263,7 @@ export function CalendrierClient({
             nom: `Semaine ${semaine} — ${JOUR_LABEL[toJour]}`,
           }),
         });
+        if (!res.ok) throw new Error((await res.json()).error || "Création de journée échouée");
         target = await res.json();
       }
       const res = await fetch(`/api/routes/${fromRouteId}/stops`, {
@@ -190,8 +274,27 @@ export function CalendrierClient({
       if (!res.ok) throw new Error((await res.json()).error);
       await refresh();
       setSelectedRouteId(target!.id);
+      feedback(true, `Arrêt déplacé vers ${JOUR_LABEL[toJour]}.`);
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Erreur");
+      feedback(false, e instanceof Error ? e.message : "Erreur");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeStop(routeId: string, stopId: string) {
+    setBusy(true);
+    try {
+      const res = await fetch(`/api/routes/${routeId}/stops`, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ stopId }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      await refresh();
+      feedback(true, "Arrêt retiré de la tournée.");
+    } catch (e) {
+      feedback(false, e instanceof Error ? e.message : "Erreur");
     } finally {
       setBusy(false);
     }
@@ -206,9 +309,11 @@ export function CalendrierClient({
         body: JSON.stringify({ contratId }),
       });
       if (!res.ok) throw new Error((await res.json()).error);
+      setLibres((prev) => prev.filter((c) => c.id !== contratId));
       await refresh();
+      feedback(true, "Contrat ajouté à la tournée.");
     } catch (e) {
-      setMessage(e instanceof Error ? e.message : "Erreur");
+      feedback(false, e instanceof Error ? e.message : "Erreur");
     } finally {
       setBusy(false);
     }
@@ -224,7 +329,6 @@ export function CalendrierClient({
 
   function printInstaller(scope: "semaine" | "jour") {
     setPrintScope(scope);
-    // Allow React to apply print-scope classes before print
     requestAnimationFrame(() => {
       requestAnimationFrame(() => window.print());
     });
@@ -273,8 +377,9 @@ export function CalendrierClient({
             <li>Un secteur primaire (1–7) / jour ; emprunt depuis d&apos;autres secteurs si sous-cible</li>
             <li>Ordre des arrêts : ville / rue / centroïdes (moins de km)</li>
             <li>Chaque secteur visité ≥ 1× par mois (~4 semaines)</li>
+            <li>Exclut les jobs non prêts (pas prêt, en commande, correction, annul…)</li>
           </ul>
-          <p className="mb-3">Contrats libres (non planifiés) : <strong>{contratsLibres.length}</strong></p>
+          <p className="mb-3">Contrats libres (non planifiés) : <strong>{libres.length}</strong></p>
           <div className="flex flex-wrap items-center gap-3">
             <label className="text-sm">
               Nb semaines{" "}
@@ -282,7 +387,7 @@ export function CalendrierClient({
                 onChange={(e) => setNbSemainesOpt(Number(e.target.value) || 4)}
                 className="ml-1 w-16 rounded border border-violet-300 px-2 py-1" />
             </label>
-            <button type="button" disabled={busy || contratsLibres.length === 0}
+            <button type="button" disabled={busy || libres.length === 0}
               onClick={optimiseIA}
               className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50">
               {busy ? "Génération…" : "Générer le plan"}
@@ -293,12 +398,24 @@ export function CalendrierClient({
 
       {mode === "manuel" && (
         <div className="no-print rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-          Réordonnez ↑↓ les arrêts, ou déplacez vers un autre jour de la Semaine {semaine}.
+          <p className="font-semibold">Ajustement manuel — Semaine {semaine}</p>
+          <p className="mt-1 text-amber-800">
+            Utilisez ▲▼ pour réordonner, « Déplacer vers… » pour changer de jour,
+            « Retirer » pour libérer un contrat, et « Ajouter » depuis la liste des contrats libres.
+          </p>
         </div>
       )}
 
       {message && (
-        <div className="no-print rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-sm">{message}</div>
+        <div
+          className={`no-print rounded-lg border px-4 py-3 text-sm ${
+            messageOk
+              ? "border-emerald-200 bg-emerald-50 text-emerald-900"
+              : "border-red-200 bg-red-50 text-red-900"
+          }`}
+        >
+          {message}
+        </div>
       )}
 
       {/* ——— Vue installateurs ——— */}
@@ -331,7 +448,6 @@ export function CalendrierClient({
             </button>
           </div>
 
-          {/* On-screen installer list (full week) */}
           <div className="installer-screen space-y-6">
             {JOURS_SEMAINE.map((j) => {
               const r = byJour.get(j.n);
@@ -354,7 +470,6 @@ export function CalendrierClient({
             })}
           </div>
 
-          {/* Print-only block respects printScope */}
           <div className="installer-print hidden print:block">
             <h1 className="mb-4 text-xl font-bold">
               Champoux Gouttières — Semaine {semaine}
@@ -454,13 +569,16 @@ export function CalendrierClient({
                             {idx + 1}
                           </span>
                           <div className="min-w-0 flex-1">
-                            <div className="font-medium">
-                              {fullName(stop.contrat.nom, stop.contrat.prenom)}
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-medium">
+                                {fullName(stop.contrat.nom, stop.contrat.prenom)}
+                              </span>
                               {stop.contrat.numContrat && (
-                                <span className="ml-2 font-mono text-xs text-slate-400">
+                                <span className="font-mono text-xs text-slate-400">
                                   #{stop.contrat.numContrat}
                                 </span>
                               )}
+                              <EquipBadge equip={stop.contrat.equip} />
                             </div>
                             <div className="text-sm text-slate-600">
                               {fullAddress(stop.contrat.civique, stop.contrat.rue, stop.contrat.villeNom)}
@@ -471,27 +589,56 @@ export function CalendrierClient({
                             <div className="text-xs text-slate-500">
                               {formatMoney(stop.contrat.montant)}
                             </div>
+                            <StatutNote statut={stop.contrat.statut} />
                           </div>
                           {mode === "manuel" && (
-                            <div className="flex shrink-0 flex-col gap-1">
-                              <button type="button" onClick={() => moveUp(selected, idx)}
-                                className="rounded border px-2 py-0.5 text-xs">↑</button>
-                              <button type="button" onClick={() => moveDown(selected, idx)}
-                                className="rounded border px-2 py-0.5 text-xs">↓</button>
-                              <select
-                                className="mt-1 rounded border px-1 py-0.5 text-[10px]"
-                                defaultValue=""
-                                onChange={(e) => {
-                                  const j = Number(e.target.value);
-                                  if (j) moveToDay(stop.id, selected.id, j);
-                                  e.target.value = "";
-                                }}
+                            <div className="flex shrink-0 flex-col gap-1.5">
+                              <div className="flex gap-1">
+                                <button
+                                  type="button"
+                                  disabled={busy || idx === 0}
+                                  onClick={() => moveUp(selected, idx)}
+                                  title="Monter"
+                                  className="rounded border border-slate-300 px-2 py-1 text-xs font-bold disabled:opacity-40"
+                                >
+                                  ▲
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={busy || idx >= selected.stops.length - 1}
+                                  onClick={() => moveDown(selected, idx)}
+                                  title="Descendre"
+                                  className="rounded border border-slate-300 px-2 py-1 text-xs font-bold disabled:opacity-40"
+                                >
+                                  ▼
+                                </button>
+                              </div>
+                              <label className="block text-[10px] font-medium text-slate-500">
+                                Déplacer vers…
+                                <select
+                                  disabled={busy}
+                                  className="mt-0.5 block w-full rounded border border-slate-300 px-1.5 py-1 text-xs"
+                                  defaultValue=""
+                                  onChange={(e) => {
+                                    const j = Number(e.target.value);
+                                    if (j) moveToDay(stop.id, selected.id, j);
+                                    e.target.value = "";
+                                  }}
+                                >
+                                  <option value="">Choisir un jour</option>
+                                  {JOURS_SEMAINE.filter((x) => x.n !== selected.jourSemaine).map((x) => (
+                                    <option key={x.n} value={x.n}>{x.label}</option>
+                                  ))}
+                                </select>
+                              </label>
+                              <button
+                                type="button"
+                                disabled={busy}
+                                onClick={() => removeStop(selected.id, stop.id)}
+                                className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 disabled:opacity-40"
                               >
-                                <option value="">→ jour</option>
-                                {JOURS_SEMAINE.filter((x) => x.n !== selected.jourSemaine).map((x) => (
-                                  <option key={x.n} value={x.n}>{x.label}</option>
-                                ))}
-                              </select>
+                                Retirer
+                              </button>
                             </div>
                           )}
                         </li>
@@ -499,23 +646,43 @@ export function CalendrierClient({
                   </ol>
                 )}
 
-                {mode === "manuel" && contratsLibres.length > 0 && (
+                {mode === "manuel" && (
                   <div className="mt-6 border-t pt-4">
-                    <h3 className="mb-2 text-sm font-semibold">Ajouter un contrat libre</h3>
-                    <ul className="max-h-48 space-y-1 overflow-y-auto">
-                      {contratsLibres.slice(0, 15).map((c) => (
-                        <li key={c.id} className="flex items-center justify-between gap-2 rounded bg-slate-50 px-3 py-2 text-sm">
-                          <span className="truncate">
-                            {fullName(c.nom, c.prenom)} · {c.villeNom} · {formatMoney(c.montant)}
-                          </span>
-                          <button type="button" disabled={busy}
-                            onClick={() => addLibre(c.id, selected.id)}
-                            className="shrink-0 rounded bg-sky-600 px-2 py-1 text-xs text-white">
-                            Ajouter
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
+                    <h3 className="mb-2 text-sm font-semibold">
+                      Contrats libres — Ajouter à cette tournée
+                    </h3>
+                    {libres.length === 0 ? (
+                      <p className="text-sm text-slate-400">Aucun contrat libre.</p>
+                    ) : (
+                      <ul className="max-h-64 space-y-1 overflow-y-auto">
+                        {libres.map((c) => (
+                          <li
+                            key={c.id}
+                            className="flex items-center justify-between gap-2 rounded bg-slate-50 px-3 py-2 text-sm"
+                          >
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-2 truncate">
+                                <span>
+                                  {fullName(c.nom, c.prenom)} · {c.villeNom} · {formatMoney(c.montant)}
+                                </span>
+                                <EquipBadge equip={c.equip} />
+                              </div>
+                              {c.statut && (
+                                <div className="truncate text-[11px] text-amber-800">{c.statut}</div>
+                              )}
+                            </div>
+                            <button
+                              type="button"
+                              disabled={busy}
+                              onClick={() => addLibre(c.id, selected.id)}
+                              className="shrink-0 rounded bg-sky-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                            >
+                              Ajouter
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
                   </div>
                 )}
               </div>
@@ -577,13 +744,16 @@ function InstallerDayCard({
               {idx + 1}
             </span>
             <div className="min-w-0 flex-1">
-              <div className="text-base font-semibold text-slate-900">
-                {fullName(stop.contrat.nom, stop.contrat.prenom)}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-base font-semibold text-slate-900">
+                  {fullName(stop.contrat.nom, stop.contrat.prenom)}
+                </span>
                 {stop.contrat.numContrat && (
-                  <span className="ml-2 font-mono text-xs font-normal text-slate-400">
+                  <span className="font-mono text-xs font-normal text-slate-400">
                     #{stop.contrat.numContrat}
                   </span>
                 )}
+                <EquipBadge equip={stop.contrat.equip} />
               </div>
               <div className="text-sm text-slate-700">
                 {fullAddress(stop.contrat.civique, stop.contrat.rue, stop.contrat.villeNom)}
@@ -598,6 +768,7 @@ function InstallerDayCard({
                   {formatMoney(stop.contrat.montant)}
                 </div>
               )}
+              <StatutNote statut={stop.contrat.statut} />
             </div>
           </li>
         ))}

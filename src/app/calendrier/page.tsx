@@ -37,6 +37,8 @@ export default async function CalendrierPage() {
       rue: c.rue,
       villeNom: c.villeNom,
       montant: c.montant,
+      equip: c.equip,
+      statut: c.statut,
       secteurId: c.secteurId,
       secteur: c.secteur,
     }));
@@ -63,6 +65,8 @@ export default async function CalendrierPage() {
         montant: s.contrat.montant,
         piedLinG: s.contrat.piedLinG,
         piedLinD: s.contrat.piedLinD,
+        equip: s.contrat.equip,
+        statut: s.contrat.statut,
       },
     })),
   }));
