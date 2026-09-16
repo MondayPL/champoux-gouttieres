@@ -56,6 +56,12 @@ type ContratLibre = {
   secteur: { id: string; nom: string; numero: number; couleur: string } | null;
 };
 
+type DragPayload =
+  | { kind: "stop"; stopId: string; routeId: string }
+  | { kind: "libre"; contratId: string };
+
+const DND_MIME = "application/x-champoux-dnd";
+
 const JOUR_LABEL: Record<number, string> = Object.fromEntries(
   JOURS_SEMAINE.map((j) => [j.n, j.label])
 );
@@ -88,6 +94,26 @@ function mapApiRoutes(data: Route[]): Route[] {
   }));
 }
 
+function stopToLibre(stop: Stop): ContratLibre {
+  return {
+    id: stop.contrat.id,
+    numContrat: stop.contrat.numContrat,
+    nom: stop.contrat.nom,
+    prenom: stop.contrat.prenom,
+    telephone: stop.contrat.telephone,
+    civique: stop.contrat.civique,
+    rue: stop.contrat.rue,
+    villeNom: stop.contrat.villeNom,
+    montant: stop.contrat.montant,
+    piedLinG: stop.contrat.piedLinG,
+    piedLinD: stop.contrat.piedLinD,
+    equip: stop.contrat.equip,
+    statut: stop.contrat.statut,
+    secteurId: null,
+    secteur: null,
+  };
+}
+
 function EquipBadge({ equip }: { equip: string | null | undefined }) {
   if (!equip?.trim()) return null;
   const isNacelle = /nacelle/i.test(equip);
@@ -112,6 +138,42 @@ function StatutNote({ statut }: { statut: string | null | undefined }) {
       <span className="font-medium text-amber-900">Notes :</span> {statut}
     </div>
   );
+}
+
+function SecteurBadge({
+  secteur,
+}: {
+  secteur: { numero: number; couleur: string; nom?: string } | null | undefined;
+}) {
+  if (!secteur) return null;
+  return (
+    <span
+      className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold"
+      style={{ background: `${secteur.couleur}22`, color: secteur.couleur }}
+    >
+      <span className="h-1.5 w-1.5 rounded-full" style={{ background: secteur.couleur }} />
+      Secteur {secteur.numero}
+    </span>
+  );
+}
+
+function parseDragPayload(e: React.DragEvent): DragPayload | null {
+  try {
+    const raw = e.dataTransfer.getData(DND_MIME) || e.dataTransfer.getData("text/plain");
+    if (!raw) return null;
+    const data = JSON.parse(raw) as DragPayload;
+    if (data?.kind === "stop" || data?.kind === "libre") return data;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function setDragPayload(e: React.DragEvent, payload: DragPayload) {
+  const json = JSON.stringify(payload);
+  e.dataTransfer.setData(DND_MIME, json);
+  e.dataTransfer.setData("text/plain", json);
+  e.dataTransfer.effectAllowed = "move";
 }
 
 export function CalendrierClient({
@@ -141,6 +203,8 @@ export function CalendrierClient({
   const [nbSemainesOpt, setNbSemainesOpt] = useState(4);
   const [showMontants, setShowMontants] = useState(true);
   const [printScope, setPrintScope] = useState<"semaine" | "jour">("semaine");
+  const [dragOverTarget, setDragOverTarget] = useState<string | null>(null);
+  const [activeDrag, setActiveDrag] = useState<DragPayload | null>(null);
 
   useEffect(() => {
     setRoutes(mapApiRoutes(initialRoutes));
@@ -165,6 +229,8 @@ export function CalendrierClient({
   }, [weekRoutes]);
 
   const maxS = Math.max(maxSemaine, ...routes.map((r) => r.semaine), 1);
+
+  const canEditStops = mode === "manuel" || mode === "voir" || mode === "installateurs";
 
   function feedback(ok: boolean, text: string) {
     setMessageOk(ok);
@@ -249,33 +315,37 @@ export function CalendrierClient({
     reorder(route.id, ids);
   }
 
+  async function ensureRouteForDay(toJour: number): Promise<Route> {
+    let target = routes.find(
+      (r) => r.semaine === semaine && r.jourSemaine === toJour
+    );
+    if (target) return target;
+    const res = await fetch("/api/routes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        semaine,
+        jourSemaine: toJour,
+        nom: `Semaine ${semaine} — ${JOUR_LABEL[toJour]}`,
+      }),
+    });
+    if (!res.ok) throw new Error((await res.json()).error || "Création de journée échouée");
+    target = await res.json();
+    return target!;
+  }
+
   async function moveToDay(stopId: string, fromRouteId: string, toJour: number) {
     setBusy(true);
     try {
-      let target = routes.find(
-        (r) => r.semaine === semaine && r.jourSemaine === toJour
-      );
-      if (!target) {
-        const res = await fetch("/api/routes", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            semaine,
-            jourSemaine: toJour,
-            nom: `Semaine ${semaine} — ${JOUR_LABEL[toJour]}`,
-          }),
-        });
-        if (!res.ok) throw new Error((await res.json()).error || "Création de journée échouée");
-        target = await res.json();
-      }
+      const target = await ensureRouteForDay(toJour);
       const res = await fetch(`/api/routes/${fromRouteId}/stops`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ stopId, toRouteId: target!.id }),
+        body: JSON.stringify({ stopId, toRouteId: target.id }),
       });
       if (!res.ok) throw new Error((await res.json()).error);
       await refresh();
-      setSelectedRouteId(target!.id);
+      setSelectedRouteId(target.id);
       feedback(true, `Arrêt déplacé vers ${JOUR_LABEL[toJour]}.`);
     } catch (e) {
       feedback(false, e instanceof Error ? e.message : "Erreur");
@@ -284,7 +354,10 @@ export function CalendrierClient({
     }
   }
 
-  async function removeStop(routeId: string, stopId: string) {
+  /** Retire l’arrêt de la tournée → contrat redevient libre (file d’attente). */
+  async function remettreEnFile(routeId: string, stopId: string) {
+    const route = routes.find((r) => r.id === routeId);
+    const stop = route?.stops.find((s) => s.id === stopId);
     setBusy(true);
     try {
       const res = await fetch(`/api/routes/${routeId}/stops`, {
@@ -293,8 +366,15 @@ export function CalendrierClient({
         body: JSON.stringify({ stopId }),
       });
       if (!res.ok) throw new Error((await res.json()).error);
+      if (stop) {
+        setLibres((prev) =>
+          prev.some((c) => c.id === stop.contrat.id)
+            ? prev
+            : [stopToLibre(stop), ...prev]
+        );
+      }
       await refresh();
-      feedback(true, "Arrêt retiré de la tournée.");
+      feedback(true, "Remis en file d’attente");
     } catch (e) {
       feedback(false, e instanceof Error ? e.message : "Erreur");
     } finally {
@@ -321,7 +401,37 @@ export function CalendrierClient({
       if (!res.ok) throw new Error((await res.json()).error);
       setLibres((prev) => prev.filter((c) => c.id !== contratId));
       await refresh();
+      setSelectedRouteId(routeId);
       feedback(true, "Contrat ajouté à la tournée.");
+    } catch (e) {
+      feedback(false, e instanceof Error ? e.message : "Erreur");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addLibreToDay(contratId: string, toJour: number) {
+    setBusy(true);
+    try {
+      const target = await ensureRouteForDay(toJour);
+      if (target.stops && target.stops.length >= CAPACITE_JOURNEE.jobsManualMax) {
+        feedback(
+          false,
+          `Maximum soft atteint (${CAPACITE_JOURNEE.jobsManualMax} arrêts). Retirez un arrêt avant d’en ajouter.`
+        );
+        setBusy(false);
+        return;
+      }
+      const res = await fetch(`/api/routes/${target.id}/stops`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contratId }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+      setLibres((prev) => prev.filter((c) => c.id !== contratId));
+      await refresh();
+      setSelectedRouteId(target.id);
+      feedback(true, `Ajouté à ${JOUR_LABEL[toJour]}.`);
     } catch (e) {
       feedback(false, e instanceof Error ? e.message : "Erreur");
     } finally {
@@ -348,6 +458,41 @@ export function CalendrierClient({
     printScope === "jour" && selected
       ? [selected]
       : JOURS_SEMAINE.map((j) => byJour.get(j.n)).filter(Boolean) as Route[];
+
+  function onQueueDragOver(e: React.DragEvent) {
+    if (activeDrag?.kind !== "stop") return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDragOverTarget("queue");
+  }
+
+  function onQueueDrop(e: React.DragEvent) {
+    e.preventDefault();
+    setDragOverTarget(null);
+    const payload = parseDragPayload(e) || activeDrag;
+    setActiveDrag(null);
+    if (!payload || payload.kind !== "stop" || busy) return;
+    remettreEnFile(payload.routeId, payload.stopId);
+  }
+
+  function onDayDragOver(e: React.DragEvent, jour: number) {
+    if (activeDrag?.kind !== "libre") return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    setDragOverTarget(`day-${jour}`);
+  }
+
+  function onDayDrop(e: React.DragEvent, jour: number) {
+    e.preventDefault();
+    setDragOverTarget(null);
+    const payload = parseDragPayload(e) || activeDrag;
+    setActiveDrag(null);
+    if (!payload || payload.kind !== "libre" || busy) return;
+    addLibreToDay(payload.contratId, jour);
+  }
+
+  const showQueue =
+    mode === "voir" || mode === "manuel" || mode === "installateurs";
 
   return (
     <div className="space-y-4">
@@ -413,7 +558,8 @@ export function CalendrierClient({
           <p className="font-semibold">Ajustement manuel — Semaine {semaine}</p>
           <p className="mt-1 text-amber-800">
             Utilisez ▲▼ pour réordonner, « Déplacer vers… » pour changer de jour,
-            « Retirer » pour libérer un contrat, et « Ajouter » depuis la liste des contrats libres.
+            « Non fait → file » pour remettre un job non fait en file d’attente.
+            Glissez un arrêt vers la file, ou un job de la file vers un jour.
             L&apos;IA vise {CAPACITE_JOURNEE.jobsAiMax} jobs (3e si sous {CAPACITE_JOURNEE.montantMin.toLocaleString("fr-CA")} $) ; en manuel vous pouvez en ajouter jusqu&apos;à {CAPACITE_JOURNEE.jobsManualMax}.
           </p>
         </div>
@@ -429,6 +575,100 @@ export function CalendrierClient({
         >
           {message}
         </div>
+      )}
+
+      {/* ——— File d’attente ——— */}
+      {showQueue && (
+        <section
+          className={`no-print rounded-xl border p-4 shadow-sm transition ${
+            dragOverTarget === "queue"
+              ? "border-amber-400 bg-amber-50 ring-2 ring-amber-200"
+              : "border-amber-200 bg-amber-50/60"
+          }`}
+          onDragOver={onQueueDragOver}
+          onDragLeave={() => setDragOverTarget((t) => (t === "queue" ? null : t))}
+          onDrop={onQueueDrop}
+        >
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+            <h2 className="text-base font-semibold text-amber-950">
+              File d’attente
+              <span className="ml-2 rounded-full bg-amber-200/80 px-2 py-0.5 text-xs font-bold text-amber-900">
+                {libres.length}
+              </span>
+            </h2>
+            <p className="text-xs text-amber-800">
+              Jobs non planifiés · glisser vers un jour pour assigner · déposer un arrêt ici pour désassigner
+            </p>
+          </div>
+          {libres.length === 0 ? (
+            <p className="text-sm text-amber-800/70">Aucun job en file d’attente.</p>
+          ) : (
+            <ul className="grid max-h-72 gap-2 overflow-y-auto sm:grid-cols-2 lg:grid-cols-3">
+              {libres.map((c) => (
+                <li
+                  key={c.id}
+                  draggable={!busy && canEditStops}
+                  onDragStart={(e) => {
+                    const payload: DragPayload = { kind: "libre", contratId: c.id };
+                    setActiveDrag(payload);
+                    setDragPayload(e, payload);
+                  }}
+                  onDragEnd={() => {
+                    setDragOverTarget(null);
+                    setActiveDrag(null);
+                  }}
+                  className={`rounded-lg border border-amber-200 bg-white p-3 text-sm shadow-sm ${
+                    canEditStops ? "cursor-grab active:cursor-grabbing" : ""
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium text-slate-900">
+                      {fullName(c.nom, c.prenom)}
+                    </span>
+                    {c.numContrat && (
+                      <span className="font-mono text-[10px] text-slate-400">#{c.numContrat}</span>
+                    )}
+                    <SecteurBadge secteur={c.secteur} />
+                    <EquipBadge equip={c.equip} />
+                  </div>
+                  <div className="mt-0.5 text-xs text-slate-600">
+                    {fullAddress(c.civique, c.rue, c.villeNom)}
+                  </div>
+                  {c.telephone && (
+                    <div className="text-xs font-medium text-slate-700">☎ {c.telephone}</div>
+                  )}
+                  {formatPiLinGD(c.piedLinG, c.piedLinD) && (
+                    <div className="text-xs font-medium text-slate-700">
+                      {formatPiLinGD(c.piedLinG, c.piedLinD)}
+                    </div>
+                  )}
+                  <div className="mt-1 flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-xs font-semibold text-slate-800">
+                      {formatMoney(c.montant)}
+                    </span>
+                    {mode === "manuel" && selected && (
+                      <button
+                        type="button"
+                        disabled={
+                          busy ||
+                          selected.stops.length >= CAPACITE_JOURNEE.jobsManualMax
+                        }
+                        onClick={() => addLibre(c.id, selected.id)}
+                        className="rounded bg-sky-600 px-2.5 py-1 text-[11px] font-medium text-white disabled:opacity-50"
+                        title="Ajouter à la journée sélectionnée"
+                      >
+                        Ajouter à la journée
+                      </button>
+                    )}
+                  </div>
+                  {c.statut && (
+                    <div className="mt-1 truncate text-[11px] text-amber-800">{c.statut}</div>
+                  )}
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
       )}
 
       {/* ——— Vue installateurs ——— */}
@@ -459,6 +699,9 @@ export function CalendrierClient({
             >
               Imprimer le jour
             </button>
+            <span className="text-xs text-emerald-800">
+              Glissez un arrêt vers la file, ou utilisez « Non fait → file ».
+            </span>
           </div>
 
           <div className="installer-screen space-y-6">
@@ -466,8 +709,23 @@ export function CalendrierClient({
               const r = byJour.get(j.n);
               if (!r) {
                 return (
-                  <div key={j.n} className="rounded-xl border border-dashed border-slate-200 bg-slate-50 p-4 text-sm text-slate-400">
+                  <div
+                    key={j.n}
+                    className={`rounded-xl border border-dashed p-4 text-sm transition ${
+                      dragOverTarget === `day-${j.n}`
+                        ? "border-sky-400 bg-sky-50 text-sky-700"
+                        : "border-slate-200 bg-slate-50 text-slate-400"
+                    }`}
+                    onDragOver={(e) => onDayDragOver(e, j.n)}
+                    onDragLeave={() =>
+                      setDragOverTarget((t) => (t === `day-${j.n}` ? null : t))
+                    }
+                    onDrop={(e) => onDayDrop(e, j.n)}
+                  >
                     {j.label} — aucun trajet
+                    <span className="mt-1 block text-[11px]">
+                      Déposez un job de la file ici
+                    </span>
                   </div>
                 );
               }
@@ -478,6 +736,23 @@ export function CalendrierClient({
                   showMontants={showMontants}
                   highlight={selectedRouteId === r.id}
                   onSelect={() => setSelectedRouteId(r.id)}
+                  canRemettre={!busy}
+                  onRemettreEnFile={(stopId) => remettreEnFile(r.id, stopId)}
+                  onStopDragStart={(e, stopId) => {
+                    const payload: DragPayload = { kind: "stop", stopId, routeId: r.id };
+                    setActiveDrag(payload);
+                    setDragPayload(e, payload);
+                  }}
+                  onDragEndStop={() => {
+                    setDragOverTarget(null);
+                    setActiveDrag(null);
+                  }}
+                  dropHighlight={dragOverTarget === `day-${j.n}`}
+                  onDragOverDay={(e) => onDayDragOver(e, j.n)}
+                  onDragLeaveDay={() =>
+                    setDragOverTarget((t) => (t === `day-${j.n}` ? null : t))
+                  }
+                  onDropDay={(e) => onDayDrop(e, j.n)}
                 />
               );
             })}
@@ -513,16 +788,24 @@ export function CalendrierClient({
                 t.n > 0 &&
                 t.$ >= CAPACITE_JOURNEE.montantMin &&
                 t.$ <= CAPACITE_JOURNEE.montantMax;
+              const isDrop = dragOverTarget === `day-${j.n}`;
               return (
                 <button
                   key={j.n}
                   type="button"
                   onClick={() => r && setSelectedRouteId(r.id)}
+                  onDragOver={(e) => onDayDragOver(e, j.n)}
+                  onDragLeave={() =>
+                    setDragOverTarget((prev) => (prev === `day-${j.n}` ? null : prev))
+                  }
+                  onDrop={(e) => onDayDrop(e, j.n)}
                   className={`rounded-xl border p-3 text-left transition ${
                     selectedRouteId === r?.id
                       ? "border-sky-400 ring-2 ring-sky-200"
                       : "border-slate-200 hover:border-slate-300"
-                  } ${r ? "bg-white" : "bg-slate-50"}`}
+                  } ${r ? "bg-white" : "bg-slate-50"} ${
+                    isDrop ? "border-sky-400 bg-sky-50 ring-2 ring-sky-200" : ""
+                  }`}
                   style={
                     r?.secteur
                       ? { borderLeftWidth: 4, borderLeftColor: r.secteur.couleur }
@@ -543,7 +826,14 @@ export function CalendrierClient({
                       </div>
                     </>
                   ) : (
-                    <div className="mt-2 text-xs text-slate-400">Aucun trajet</div>
+                    <div className="mt-2 text-xs text-slate-400">
+                      Aucun trajet
+                      {canEditStops && (
+                        <span className="mt-1 block text-[10px] text-sky-600">
+                          Déposer un job ici
+                        </span>
+                      )}
+                    </div>
                   )}
                 </button>
               );
@@ -579,7 +869,26 @@ export function CalendrierClient({
                       .slice()
                       .sort((a, b) => a.ordre - b.ordre)
                       .map((stop, idx) => (
-                        <li key={stop.id} className="flex items-start gap-3 rounded-lg border border-slate-200 p-3">
+                        <li
+                          key={stop.id}
+                          draggable={!busy && canEditStops}
+                          onDragStart={(e) => {
+                            const payload: DragPayload = {
+                              kind: "stop",
+                              stopId: stop.id,
+                              routeId: selected.id,
+                            };
+                            setActiveDrag(payload);
+                            setDragPayload(e, payload);
+                          }}
+                          onDragEnd={() => {
+                            setDragOverTarget(null);
+                            setActiveDrag(null);
+                          }}
+                          className={`flex items-start gap-3 rounded-lg border border-slate-200 p-3 ${
+                            canEditStops ? "cursor-grab active:cursor-grabbing" : ""
+                          }`}
+                        >
                           <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-800 text-xs font-bold text-white">
                             {idx + 1}
                           </span>
@@ -613,53 +922,58 @@ export function CalendrierClient({
                             </div>
                             <StatutNote statut={stop.contrat.statut} />
                           </div>
-                          {mode === "manuel" && (
+                          {(mode === "manuel" || mode === "voir") && (
                             <div className="flex shrink-0 flex-col gap-1.5">
-                              <div className="flex gap-1">
-                                <button
-                                  type="button"
-                                  disabled={busy || idx === 0}
-                                  onClick={() => moveUp(selected, idx)}
-                                  title="Monter"
-                                  className="rounded border border-slate-300 px-2 py-1 text-xs font-bold disabled:opacity-40"
-                                >
-                                  ▲
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={busy || idx >= selected.stops.length - 1}
-                                  onClick={() => moveDown(selected, idx)}
-                                  title="Descendre"
-                                  className="rounded border border-slate-300 px-2 py-1 text-xs font-bold disabled:opacity-40"
-                                >
-                                  ▼
-                                </button>
-                              </div>
-                              <label className="block text-[10px] font-medium text-slate-500">
-                                Déplacer vers…
-                                <select
-                                  disabled={busy}
-                                  className="mt-0.5 block w-full rounded border border-slate-300 px-1.5 py-1 text-xs"
-                                  defaultValue=""
-                                  onChange={(e) => {
-                                    const j = Number(e.target.value);
-                                    if (j) moveToDay(stop.id, selected.id, j);
-                                    e.target.value = "";
-                                  }}
-                                >
-                                  <option value="">Choisir un jour</option>
-                                  {JOURS_SEMAINE.filter((x) => x.n !== selected.jourSemaine).map((x) => (
-                                    <option key={x.n} value={x.n}>{x.label}</option>
-                                  ))}
-                                </select>
-                              </label>
+                              {mode === "manuel" && (
+                                <>
+                                  <div className="flex gap-1">
+                                    <button
+                                      type="button"
+                                      disabled={busy || idx === 0}
+                                      onClick={() => moveUp(selected, idx)}
+                                      title="Monter"
+                                      className="rounded border border-slate-300 px-2 py-1 text-xs font-bold disabled:opacity-40"
+                                    >
+                                      ▲
+                                    </button>
+                                    <button
+                                      type="button"
+                                      disabled={busy || idx >= selected.stops.length - 1}
+                                      onClick={() => moveDown(selected, idx)}
+                                      title="Descendre"
+                                      className="rounded border border-slate-300 px-2 py-1 text-xs font-bold disabled:opacity-40"
+                                    >
+                                      ▼
+                                    </button>
+                                  </div>
+                                  <label className="block text-[10px] font-medium text-slate-500">
+                                    Déplacer vers…
+                                    <select
+                                      disabled={busy}
+                                      className="mt-0.5 block w-full rounded border border-slate-300 px-1.5 py-1 text-xs"
+                                      defaultValue=""
+                                      onChange={(e) => {
+                                        const j = Number(e.target.value);
+                                        if (j) moveToDay(stop.id, selected.id, j);
+                                        e.target.value = "";
+                                      }}
+                                    >
+                                      <option value="">Choisir un jour</option>
+                                      {JOURS_SEMAINE.filter((x) => x.n !== selected.jourSemaine).map((x) => (
+                                        <option key={x.n} value={x.n}>{x.label}</option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                </>
+                              )}
                               <button
                                 type="button"
                                 disabled={busy}
-                                onClick={() => removeStop(selected.id, stop.id)}
-                                className="rounded border border-red-300 bg-red-50 px-2 py-1 text-xs font-medium text-red-700 disabled:opacity-40"
+                                onClick={() => remettreEnFile(selected.id, stop.id)}
+                                className="rounded border border-amber-400 bg-amber-50 px-2 py-1 text-xs font-medium text-amber-900 disabled:opacity-40"
+                                title="Retirer de la tournée et remettre en file d’attente"
                               >
-                                Retirer
+                                Non fait → file
                               </button>
                             </div>
                           )}
@@ -671,26 +985,23 @@ export function CalendrierClient({
                 {mode === "manuel" && (
                   <div className="mt-6 border-t pt-4">
                     <h3 className="mb-2 text-sm font-semibold">
-                      Contrats libres — Ajouter à cette tournée
+                      Ajouter depuis la file d’attente
                     </h3>
                     {libres.length === 0 ? (
-                      <p className="text-sm text-slate-400">Aucun contrat libre.</p>
+                      <p className="text-sm text-slate-400">Aucun job en file.</p>
                     ) : (
-                      <ul className="max-h-64 space-y-1 overflow-y-auto">
+                      <ul className="max-h-48 space-y-1 overflow-y-auto">
                         {libres.map((c) => (
                           <li
-                            key={c.id}
+                            key={`add-${c.id}`}
                             className="flex items-center justify-between gap-2 rounded bg-slate-50 px-3 py-2 text-sm"
                           >
-                            <div className="min-w-0">
-                              <div className="flex flex-wrap items-center gap-2 truncate">
-                                <span>
-                                  {fullName(c.nom, c.prenom)} · {c.villeNom} · {formatMoney(c.montant)}
+                            <div className="min-w-0 truncate">
+                              {fullName(c.nom, c.prenom)} · {c.villeNom} · {formatMoney(c.montant)}
+                              {c.secteur && (
+                                <span className="ml-1 text-[10px] text-slate-500">
+                                  · S{c.secteur.numero}
                                 </span>
-                                <EquipBadge equip={c.equip} />
-                              </div>
-                              {c.statut && (
-                                <div className="truncate text-[11px] text-amber-800">{c.statut}</div>
                               )}
                             </div>
                             <button
@@ -701,11 +1012,6 @@ export function CalendrierClient({
                               }
                               onClick={() => addLibre(c.id, selected.id)}
                               className="shrink-0 rounded bg-sky-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
-                              title={
-                                selected.stops.length >= CAPACITE_JOURNEE.jobsManualMax
-                                  ? `Max soft ${CAPACITE_JOURNEE.jobsManualMax} arrêts`
-                                  : undefined
-                              }
                             >
                               Ajouter
                             </button>
@@ -730,17 +1036,35 @@ function InstallerDayCard({
   highlight,
   onSelect,
   print,
+  canRemettre,
+  onRemettreEnFile,
+  onStopDragStart,
+  onDragEndStop,
+  dropHighlight,
+  onDragOverDay,
+  onDragLeaveDay,
+  onDropDay,
 }: {
   route: Route;
   showMontants: boolean;
   highlight?: boolean;
   onSelect?: () => void;
   print?: boolean;
+  canRemettre?: boolean;
+  onRemettreEnFile?: (stopId: string) => void;
+  onStopDragStart?: (e: React.DragEvent, stopId: string) => void;
+  onDragEndStop?: () => void;
+  dropHighlight?: boolean;
+  onDragOverDay?: (e: React.DragEvent) => void;
+  onDragLeaveDay?: () => void;
+  onDropDay?: (e: React.DragEvent) => void;
 }) {
   const stops = route.stops.slice().sort((a, b) => a.ordre - b.ordre);
   const className = `w-full rounded-xl border bg-white p-4 text-left shadow-sm ${
     highlight ? "border-sky-400 ring-2 ring-sky-200" : "border-slate-200"
-  } ${print ? "mb-6 break-inside-avoid" : ""}`;
+  } ${dropHighlight ? "border-sky-400 bg-sky-50 ring-2 ring-sky-200" : ""} ${
+    print ? "mb-6 break-inside-avoid" : ""
+  }`;
   const style = route.secteur
     ? { borderLeftWidth: 6, borderLeftColor: route.secteur.couleur }
     : undefined;
@@ -769,7 +1093,22 @@ function InstallerDayCard({
       </div>
       <ol className="space-y-3">
         {stops.map((stop, idx) => (
-          <li key={stop.id} className="flex items-start gap-3 border-b border-slate-100 pb-3 last:border-0">
+          <li
+            key={stop.id}
+            draggable={!!onStopDragStart && !print}
+            onDragStart={
+              onStopDragStart
+                ? (e) => {
+                    e.stopPropagation();
+                    onStopDragStart(e, stop.id);
+                  }
+                : undefined
+            }
+            onDragEnd={onDragEndStop}
+            className={`flex items-start gap-3 border-b border-slate-100 pb-3 last:border-0 ${
+              onStopDragStart && !print ? "cursor-grab active:cursor-grabbing" : ""
+            }`}
+          >
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-slate-900 text-lg font-bold text-white">
               {idx + 1}
             </span>
@@ -805,6 +1144,19 @@ function InstallerDayCard({
               )}
               <StatutNote statut={stop.contrat.statut} />
             </div>
+            {onRemettreEnFile && !print && (
+              <button
+                type="button"
+                disabled={!canRemettre}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRemettreEnFile(stop.id);
+                }}
+                className="no-print shrink-0 rounded border border-amber-400 bg-amber-50 px-2 py-1 text-[11px] font-medium text-amber-900 disabled:opacity-40"
+              >
+                Non fait → file
+              </button>
+            )}
           </li>
         ))}
       </ol>
@@ -813,13 +1165,31 @@ function InstallerDayCard({
 
   if (onSelect) {
     return (
-      <button type="button" onClick={onSelect} className={className} style={style}>
+      <div
+        role="button"
+        tabIndex={0}
+        onClick={onSelect}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") onSelect();
+        }}
+        className={className}
+        style={style}
+        onDragOver={onDragOverDay}
+        onDragLeave={onDragLeaveDay}
+        onDrop={onDropDay}
+      >
         {inner}
-      </button>
+      </div>
     );
   }
   return (
-    <div className={className} style={style}>
+    <div
+      className={className}
+      style={style}
+      onDragOver={onDragOverDay}
+      onDragLeave={onDragLeaveDay}
+      onDrop={onDropDay}
+    >
       {inner}
     </div>
   );
